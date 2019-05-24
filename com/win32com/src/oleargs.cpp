@@ -16,7 +16,7 @@ static PyObject *PyVariant_Type;
 // Do BYREF array's get the existing array backfilled with new elements
 // (new behaviour that VB seems to want), or allocate a completely
 // new array (old behaviour)
-#define BYREF_ARRAY_USE_EXISTING_ARRAY
+//#define BYREF_ARRAY_USE_EXISTING_ARRAY
 
 // Need to put this in pywintypes.h with rest of compatibility macros
 #if (PY_VERSION_HEX < 0x03000000)
