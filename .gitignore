@@ -48,3 +48,6 @@ isapi/src/pyISAPI_messages.h
 *.suo
 *.vcproj
 *.user
+
+
+.idea
