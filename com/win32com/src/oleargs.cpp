@@ -16,6 +16,7 @@ static PyObject *PyVariant_Type;
 // Do BYREF array's get the existing array backfilled with new elements
 // (new behaviour that VB seems to want), or allocate a completely
 // new array (old behaviour)
+// NOTE: commenting this, the m_arrayBuf of the PythonOleArgHelper class is freed!
 //#define BYREF_ARRAY_USE_EXISTING_ARRAY
 
 // Need to put this in pywintypes.h with rest of compatibility macros
@@ -339,6 +340,7 @@ PyObject *PyCom_PyObjectFromVariant(const VARIANT *var)
 		return OleSetTypeError(_T("Cant convert vectors!"));
 	}
 
+    // NOTE: this macro checks if this is an array (in the case of the item results it should!)
 	if (V_ISARRAY(var)) {
 		SAFEARRAY FAR *psa;
 		if (V_ISBYREF(var))
@@ -858,14 +860,16 @@ static PyObject *PyCom_PyObjectFromSAFEARRAYDimensionItem(SAFEARRAY *psa, VARENU
 			BSTR str;
 			hres = SafeArrayGetElement(psa, arrayIndices, &str);
 			if (FAILED(hres)) break;
-			subitem = PyWinObject_FromBstr(str);
+			// NOTE: this fixes a reference pointer memory leak when the python object id returned
+			subitem = PyWinObject_FromBstr(str, TRUE);
 			break;
 		}
 		case VT_DISPATCH: {
 			IDispatch *pDisp;
 			hres = SafeArrayGetElement(psa, arrayIndices, &pDisp);
 			if (FAILED(hres)) break;
-			subitem = PyCom_PyObjectFromIUnknown(pDisp, IID_IDispatch, TRUE);
+			// NOTE: this fixes a reference pointer memory leak when the python object id returned
+			subitem = PyCom_PyObjectFromIUnknown(pDisp, IID_IDispatch, FALSE);
 			break;
 		}
 		// case VT_ERROR - handled above with I4
@@ -889,7 +893,8 @@ static PyObject *PyCom_PyObjectFromSAFEARRAYDimensionItem(SAFEARRAY *psa, VARENU
 			IUnknown *pUnk;
 			hres = SafeArrayGetElement(psa, arrayIndices, &pUnk);
 			if (FAILED(hres)) break;
-			subitem = PyCom_PyObjectFromIUnknown(pUnk, IID_IUnknown, TRUE);
+			// NOTE: this fixes a reference pointer memory leak when the python object id returned
+			subitem = PyCom_PyObjectFromIUnknown(pUnk, IID_IUnknown, FALSE);
 			break;
 		}
 		// case VT_DECIMAL
@@ -960,21 +965,29 @@ static PyObject *PyCom_PyObjectFromSAFEARRAYDimensionItem(SAFEARRAY *psa, VARENU
 PyObject *PyCom_PyObjectFromSAFEARRAYBuildDimension(SAFEARRAY *psa, VARENUM vt, UINT dimNo, UINT nDims, long *arrayIndices)
 {
 	long lb, ub;
-	HRESULT hres = SafeArrayGetLBound(psa, dimNo, &lb);
+    HRESULT hres;
+    //NOTE: check the lower bound of the array
+	hres = SafeArrayGetLBound(psa, dimNo, &lb);
 	if (FAILED(hres))
 		return PyCom_BuildPyException(hres);
+	// NOTE: check the upper boound of the array
 	hres = SafeArrayGetUBound(psa, dimNo, &ub);
 	if (FAILED(hres))
 		return PyCom_BuildPyException(hres);
+
 	// First we take a shortcut for VT_UI1 (ie, binary) buffers.
 	if (vt==VT_UI1) {
 		void *ob_buf, *sa_buf;
+		// NOTE: from oleauto.h
+		//  SafeArrayAccessData() -> Increments the lock count of an array, and retrieves a pointer to the array data.
 		HRESULT hres = SafeArrayAccessData(psa,&sa_buf);
 		if (FAILED(hres))
 			return PyCom_BuildPyException(hres);
+
 		long cElems = ub-lb+1;
 		long dataSize = cElems * sizeof(unsigned char);
 		PyObject *ret = PyBuffer_New(dataSize);
+
 		if (ret!=NULL) {
 			// Access the buffer object using the buffer interfaces.
 			DWORD count;
@@ -983,6 +996,7 @@ PyObject *PyCom_PyObjectFromSAFEARRAYBuildDimension(SAFEARRAY *psa, VARENUM vt, 
 				Py_DECREF(ret);
 				return NULL;
 			}
+			// NOTE: here it checks for the correct construction of the buffer
 			if (count != cElems) {
 				PyErr_SetString(PyExc_RuntimeError, "buffer size is not what we created!");
 				SafeArrayUnaccessData(psa);
@@ -991,34 +1005,42 @@ PyObject *PyCom_PyObjectFromSAFEARRAYBuildDimension(SAFEARRAY *psa, VARENUM vt, 
 			}
 			memcpy(ob_buf, sa_buf, dataSize);
 		}
+		// NOTE: here we decrement
+		//  SafeArrayUnaccessData() -> Decrements the lock count of an array, and invalidates the pointer retrieved by
 		SafeArrayUnaccessData(psa);
 		return ret;
 	}
+
 	// Another shortcut for VT_RECORD types.
 	if (vt==VT_RECORD) {
-		return PyObject_FromSAFEARRAYRecordInfo(psa);
+        return PyObject_FromSAFEARRAYRecordInfo(psa);
 	}
 	// Normal SAFEARRAY case returning a tuple.
 
+	// NOTE: here the returned tuple is built!
 	PyObject *retTuple = PyTuple_New(ub-lb+1);
 	if (retTuple==NULL) return FALSE;
 	int tupleIndex=0;
+
 	// Get a pointer for the dimension to iterate (the last one)
 	long *pMyArrayIndex = arrayIndices+(dimNo-1);
 	*pMyArrayIndex = lb;
 	BOOL bBuildItems = (nDims==dimNo);
+	// NOTE: possible it is here (we are iterating throughout the elements of the array)
 	for ( ; *pMyArrayIndex<=ub ; (*pMyArrayIndex)++, tupleIndex++) {
 		PyObject *subItem = NULL;
 		if (bBuildItems) {
 			subItem = PyCom_PyObjectFromSAFEARRAYDimensionItem(psa, vt, arrayIndices);
 		} else {
 			// Recurse and build sub-array.
+			// NOTE: in this case the item is another array...
 			subItem = PyCom_PyObjectFromSAFEARRAYBuildDimension(psa, vt, dimNo+1, nDims, arrayIndices);
 		}
 	    if (subItem==NULL) { 
 		    Py_DECREF(retTuple);
 		    return NULL;
 	    }
+
 		PyTuple_SET_ITEM(retTuple, tupleIndex, subItem);
 	}
 	return retTuple;
@@ -1050,9 +1072,11 @@ PythonOleArgHelper::PythonOleArgHelper()
 {
 	// First wipe myself out to zero!
 	memset(this, 0, sizeof(*this));
+	// NOTE: this is for specifying if the argument has to be given in output
 	m_bIsOut = FALSE;
 	m_reqdType = VT_VARIANT;
 	m_bParsedTypeInfo = FALSE;
+	// NOTE: this is for the conversion of this argument
 	m_convertDirection = POAH_CONVERT_UNKNOWN;
 }
 PythonOleArgHelper::~PythonOleArgHelper() 
@@ -1529,6 +1553,7 @@ BOOL PythonOleArgHelper::MakeObjToVariant(PyObject *obj, VARIANT *var, PyObject 
 	return rc;
 }
 
+// NOTE: example of this is for building the returned value of the invoke call
 PyObject *PythonOleArgHelper::MakeVariantToObj(VARIANT *var)
 {
 	// If m_bMadeObjToVariant == TRUE, then we have previously converted from
@@ -1540,6 +1565,7 @@ PyObject *PythonOleArgHelper::MakeVariantToObj(VARIANT *var)
 	// Check my logic still holds up - basically we cant call this twice on the same object.
 	assert(m_convertDirection==POAH_CONVERT_UNKNOWN || m_convertDirection==POAH_CONVERT_FROM_PYOBJECT);
 	// If this is the "driving" conversion, then the callers owns the buffers - we just use-em
+	// NOTE: this is not called in the case of passed argument to the invoke which needs to be processed out
 	if (m_convertDirection==POAH_CONVERT_UNKNOWN) {
 		m_convertDirection = POAH_CONVERT_FROM_VARIANT;
 		m_bIsOut = V_ISBYREF(var); // assume byref args are out params.

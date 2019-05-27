@@ -525,8 +525,9 @@ PyObject * PyIDispatch::InvokeTypes(PyObject *self, PyObject *args)
 			}
 			// Loop over all the args, reverse order, setting the byrefs.
 			for (int arg=numArgArray-1;arg>=0;arg--)
-				if (ArgHelpers[numArgArray-arg-1].m_bIsOut)
-					PyTuple_SetItem(result, tupleItem++, ArgHelpers[numArgArray-arg-1].MakeVariantToObj(dispparams.rgvarg+(arg)));
+				if (ArgHelpers[numArgArray-arg-1].m_bIsOut){
+                    PyTuple_SetItem(result, tupleItem++, ArgHelpers[numArgArray-arg-1].MakeVariantToObj(dispparams.rgvarg+(arg)));
+				}
 		}
 	}
 	if (pVarResultUse) VariantClear(pVarResultUse); // wipe the result.
